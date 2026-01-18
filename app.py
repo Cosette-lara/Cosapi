@@ -1,11 +1,30 @@
 import os
 import uuid
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
+# ---------------------------
+# Paths / dirs (Render-safe)
+# ---------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# En Render debes definir COSAPI_UPLOAD_DIR (ej: /tmp/uploads o /var/data/uploads)
+UPLOAD_DIR = os.getenv("COSAPI_UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
+AUDIO_DIR = os.path.join(UPLOAD_DIR, "audio")
+PHOTO_DIR = os.path.join(UPLOAD_DIR, "photos")
+
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+
+# Crear directorios ANTES de montar StaticFiles (Starlette lo exige)
+os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(PHOTO_DIR, exist_ok=True)
+
+# Import core DESPUÉS de crear dirs (evita crashes al importar)
 from core import (
-    AUDIO_DIR, PHOTO_DIR,
     create_report, update_transcript,
     list_reports, get_report,
     list_reports_by_date
@@ -13,15 +32,20 @@ from core import (
 
 app = FastAPI(title="Cosapi - Asistente de Obra por Voz (PoC)")
 
-# Servir UI y uploads
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Servir UI y uploads (monta el path REAL del env)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    with open("static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    # Más robusto que open() en serverless/containers
+    if not os.path.exists(INDEX_HTML):
+        return HTMLResponse(
+            content="<h3>No existe static/index.html</h3>",
+            status_code=500
+        )
+    return FileResponse(INDEX_HTML)
 
 
 @app.post("/api/report")
@@ -47,10 +71,12 @@ async def api_create_report(
         photo_ext = os.path.splitext(photo.filename or "")[1] or ".jpg"
         photo_name = f"{uuid.uuid4()}{photo_ext}"
         photo_disk_path = os.path.join(PHOTO_DIR, photo_name)
+
         photo_bytes = await photo.read()
         with open(photo_disk_path, "wb") as f:
             f.write(photo_bytes)
-        # URL que el front puede renderizar
+
+        # URL renderizable en front (porque montamos /uploads -> UPLOAD_DIR)
         photo_url = f"/uploads/photos/{photo_name}"
 
     audio_mime = audio.content_type or "audio/webm"
@@ -91,17 +117,17 @@ def api_get_report(report_id: str):
 
 @app.get("/resumen-diario", response_class=HTMLResponse)
 def resumen_diario(fecha: str):
-    """
-    Resumen diario imprimible de todas las 'liberaciones' (reportes) con fotos.
-    URL ejemplo: /resumen-diario?fecha=2026-01-18
-    """
     items = list_reports_by_date(fecha)
 
     rows_html = []
     for i, it in enumerate(items, start=1):
         foto = it.get("photo_url")
-        foto_html = (f'<a href="{foto}" target="_blank"><img src="{foto}" style="width:160px;height:110px;object-fit:cover;border-radius:10px;border:1px solid #ddd"/></a>'
-                     if foto else '<span style="color:#666">Sin foto</span>')
+        foto_html = (
+            f'<a href="{foto}" target="_blank">'
+            f'<img src="{foto}" style="width:160px;height:110px;object-fit:cover;border-radius:10px;border:1px solid #ddd"/>'
+            f'</a>'
+            if foto else '<span style="color:#666">Sin foto</span>'
+        )
 
         txt = (it.get("transcript_text") or "").replace("<", "&lt;").replace(">", "&gt;")
         rows_html.append(f"""
