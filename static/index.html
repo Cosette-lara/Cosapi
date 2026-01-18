@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Cosapi - Asistente de Obra por Voz</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;max-width:980px;margin:24px auto;padding:0 16px;}
+    .card{border:1px solid #e7e7e7;border-radius:14px;padding:16px;margin:12px 0;}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+    label{display:block;font-weight:600;margin:10px 0 6px;}
+    input,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid #ddd;}
+    textarea{min-height:130px;}
+    button{padding:10px 14px;border-radius:10px;border:1px solid #ddd;cursor:pointer;}
+    .primary{background:#111;color:#fff;border-color:#111;}
+    .muted{color:#666;font-size:13px;}
+    .tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+    .tab{padding:8px 12px;border-radius:999px;border:1px solid #ddd;background:#fff;}
+    .tab.active{background:#111;color:#fff;border-color:#111;}
+    .hidden{display:none;}
+    .cards{display:flex;flex-direction:column;gap:10px;}
+    .rpt{border:1px solid #eee;border-radius:14px;padding:12px;display:grid;grid-template-columns:160px 1fr;gap:12px;align-items:start;}
+    .thumb{width:160px;height:110px;object-fit:cover;border-radius:12px;border:1px solid #ddd;background:#fafafa;}
+    .small{font-size:12px;color:#666;}
+    audio{width:100%;}
+  </style>
+</head>
+<body>
+  <h2>Asistente de Obra por Voz (PoC)</h2>
+  <div class="muted">Captura por voz + foto opcional, ver reportes guardados y generar resumen diario imprimible.</div>
+
+  <div class="tabs">
+    <button class="tab active" id="tabCap">Capturar</button>
+    <button class="tab" id="tabRep">Reportes</button>
+  </div>
+
+  <!-- CAPTURA -->
+  <div id="viewCap">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Proyecto / Frente</label>
+          <input id="project_id" placeholder="Ej: Obra X - Frente 3"/>
+        </div>
+        <div>
+          <label>Correo (opcional)</label>
+          <input id="user_email" placeholder="Ej: supervisor@cosapi.com"/>
+        </div>
+      </div>
+
+      <label>Foto (opcional)</label>
+      <input id="photo" type="file" accept="image/*"/>
+      <div id="photoPrev" class="muted"></div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+        <button class="primary" id="btnStart">🎙️ Iniciar</button>
+        <button id="btnStop" disabled>⏹️ Detener</button>
+        <button class="primary" id="btnSend" disabled>📤 Enviar y transcribir</button>
+        <span id="status" class="muted"></span>
+      </div>
+
+      <div style="margin-top:12px;">
+        <audio id="player" controls style="display:none;"></audio>
+      </div>
+
+      <p id="msg" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px 0;">Transcripción</h3>
+      <div class="muted">No mostramos JSON. Solo texto editable.</div>
+
+      <label>Report ID</label>
+      <input id="report_id" readonly placeholder="—"/>
+
+      <label>Texto transcrito (editable)</label>
+      <textarea id="transcript" placeholder="Aquí aparecerá la transcripción..."></textarea>
+
+      <button class="primary" id="btnSave" disabled>💾 Guardar corrección</button>
+      <p id="msg2" class="muted"></p>
+    </div>
+  </div>
+
+  <!-- REPORTES -->
+  <div id="viewRep" class="hidden">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Resumen diario (YYYY-MM-DD)</label>
+          <input id="fecha" placeholder="Ej: 2026-01-18"/>
+          <div class="small">Tip: si lo dejas vacío, usa la fecha de hoy (UTC).</div>
+        </div>
+        <div style="display:flex;align-items:end;gap:10px;flex-wrap:wrap;">
+          <button class="primary" id="btnResumen">🧾 Ver resumen diario</button>
+          <button id="btnRefresh">🔄 Actualizar lista</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px 0;">Reportes guardados</h3>
+      <div id="list" class="cards"></div>
+    </div>
+  </div>
+
+<script>
+/* Tabs */
+const tabCap = document.getElementById('tabCap');
+const tabRep = document.getElementById('tabRep');
+const viewCap = document.getElementById('viewCap');
+const viewRep = document.getElementById('viewRep');
+
+tabCap.onclick = () => {
+  tabCap.classList.add('active'); tabRep.classList.remove('active');
+  viewCap.classList.remove('hidden'); viewRep.classList.add('hidden');
+};
+tabRep.onclick = async () => {
+  tabRep.classList.add('active'); tabCap.classList.remove('active');
+  viewRep.classList.remove('hidden'); viewCap.classList.add('hidden');
+  await refreshList();
+};
+
+/* Photo preview text */
+const photoInput = document.getElementById('photo');
+const photoPrev = document.getElementById('photoPrev');
+photoInput.onchange = () => {
+  const f = photoInput.files[0];
+  photoPrev.textContent = f ? `Foto seleccionada: ${f.name}` : '';
+};
+
+/* Recording */
+let mediaRecorder;
+let chunks = [];
+let audioBlob = null;
+
+const btnStart = document.getElementById('btnStart');
+const btnStop  = document.getElementById('btnStop');
+const btnSend  = document.getElementById('btnSend');
+const statusEl = document.getElementById('status');
+const player   = document.getElementById('player');
+const msg      = document.getElementById('msg');
+
+btnStart.onclick = async () => {
+  msg.textContent = '';
+  chunks = [];
+  audioBlob = null;
+  player.style.display = 'none';
+  player.src = '';
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.ondataavailable = e => chunks.push(e.data);
+  mediaRecorder.onstop = () => {
+    audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+    player.src = URL.createObjectURL(audioBlob);
+    player.style.display = 'block';
+    btnSend.disabled = false;
+  };
+  mediaRecorder.start();
+  statusEl.textContent = 'Grabando...';
+  btnStart.disabled = true;
+  btnStop.disabled = false;
+  btnSend.disabled = true;
+};
+
+btnStop.onclick = () => {
+  mediaRecorder.stop();
+  statusEl.textContent = 'Grabación lista.';
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+};
+
+const transcriptEl = document.getElementById('transcript');
+const reportIdEl   = document.getElementById('report_id');
+const btnSave      = document.getElementById('btnSave');
+const msg2         = document.getElementById('msg2');
+
+btnSend.onclick = async () => {
+  msg.textContent = 'Enviando...';
+  const project_id = document.getElementById('project_id').value;
+  const user_email = document.getElementById('user_email').value;
+  const photoFile  = document.getElementById('photo').files[0];
+
+  const form = new FormData();
+  form.append('audio', audioBlob, 'reporte.webm');
+  if (photoFile) form.append('photo', photoFile, photoFile.name);
+  if (project_id) form.append('project_id', project_id);
+  if (user_email) form.append('user_email', user_email);
+
+  const res = await fetch('/api/report', { method:'POST', body: form });
+  const data = await res.json();
+
+  if (!res.ok) {
+    msg.textContent = 'Error: ' + (data.detail || 'No se pudo transcribir');
+    return;
+  }
+
+  msg.textContent = 'Transcripción lista ✅';
+  reportIdEl.value = data.report_id || '';
+  transcriptEl.value = data.transcript_text || '';
+  btnSave.disabled = !data.report_id;
+};
+
+btnSave.onclick = async () => {
+  msg2.textContent = 'Guardando...';
+  const reportId = reportIdEl.value;
+  const text = transcriptEl.value;
+
+  const form = new FormData();
+  form.append('transcript_text', text);
+
+  const res = await fetch(`/api/report/${reportId}/transcript`, { method:'POST', body: form });
+  const data = await res.json();
+
+  if (!res.ok) {
+    msg2.textContent = 'Error: ' + (data.detail || 'No se pudo guardar');
+    return;
+  }
+  msg2.textContent = 'Guardado ✅';
+};
+
+/* Reports view */
+const listEl = document.getElementById('list');
+const btnRefresh = document.getElementById('btnRefresh');
+btnRefresh.onclick = refreshList;
+
+async function refreshList(){
+  const res = await fetch('/api/reports?limit=50');
+  const data = await res.json();
+  const items = data.items || [];
+
+  listEl.innerHTML = '';
+  if(items.length === 0){
+    listEl.innerHTML = '<div class="muted">No hay reportes aún.</div>';
+    return;
+  }
+
+  items.forEach(it => {
+    const div = document.createElement('div');
+    div.className = 'rpt';
+
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    if(it.photo_url){
+      img.src = it.photo_url;
+      img.onclick = () => window.open(it.photo_url, '_blank');
+      img.style.cursor = 'pointer';
+    } else {
+      img.alt = 'Sin foto';
+    }
+
+    const body = document.createElement('div');
+    body.innerHTML = `
+      <div><b>${it.project_id || '(sin proyecto)'}</b> <span class="small">${it.created_at || ''}</span></div>
+      <div class="small">ID: ${it.report_id}</div>
+      <div style="margin-top:6px;white-space:pre-wrap;">${(it.transcript_snippet || '').replaceAll('<','&lt;').replaceAll('>','&gt;')}</div>
+      <div class="small" style="margin-top:6px;">${it.photo_url ? '📷 con foto' : 'sin foto'}</div>
+    `;
+
+    div.appendChild(img);
+    div.appendChild(body);
+    listEl.appendChild(div);
+  });
+}
+
+/* Daily summary */
+const btnResumen = document.getElementById('btnResumen');
+btnResumen.onclick = () => {
+  const f = document.getElementById('fecha').value.trim();
+  const fecha = f ? f : new Date().toISOString().slice(0,10); // UTC
+  window.open(`/resumen-diario?fecha=${fecha}`, '_blank');
+};
+</script>
+</body>
+</html>

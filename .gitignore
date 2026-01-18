@@ -1,0 +1,21 @@
+# Entorno
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Base de datos local
+*.db
+
+# Archivos subidos
+uploads/
+*.log
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
