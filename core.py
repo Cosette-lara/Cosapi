@@ -8,14 +8,14 @@ from typing import Optional, Dict, Any, List
 import requests
 
 BASE_DIR = os.path.dirname(__file__)
-DB_PATH = os.path.join(BASE_DIR, "cosapi_voice_poc.db")
+DB_PATH = os.getenv("COSAPI_DB_PATH", os.path.join(BASE_DIR, "cosapi_voice_poc.db"))
 
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOAD_DIR = os.getenv("COSAPI_UPLOAD_DIR", os.path.join(BASE_DIR, "uploads"))
 AUDIO_DIR = os.path.join(UPLOAD_DIR, "audio")
 PHOTO_DIR = os.path.join(UPLOAD_DIR, "photos")
-
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(PHOTO_DIR, exist_ok=True)
+
 
 
 def now_iso() -> str:
